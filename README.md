@@ -1,227 +1,264 @@
-# @jridgewell/gen-mapping
+# @jridgewell/sourcemap-codec
 
-> Generate source maps
+Encode/decode the `mappings` property of a [sourcemap](https://docs.google.com/document/d/1U1RGAehQwRypUTovF1KRlpiOFze0b-_2gc6fAH0KY0k/edit).
 
-`gen-mapping` allows you to generate a source map during transpilation or minification.
-With a source map, you're able to trace the original location in the source file, either in Chrome's
-DevTools or using a library like [`@jridgewell/trace-mapping`][trace-mapping].
 
-You may already be familiar with the [`source-map`][source-map] package's `SourceMapGenerator`. This
-provides the same `addMapping` and `setSourceContent` API.
+## Why?
+
+Sourcemaps are difficult to generate and manipulate, because the `mappings` property – the part that actually links the generated code back to the original source – is encoded using an obscure method called [Variable-length quantity](https://en.wikipedia.org/wiki/Variable-length_quantity). On top of that, each segment in the mapping contains offsets rather than absolute indices, which means that you can't look at a segment in isolation – you have to understand the whole sourcemap.
+
+This package makes the process slightly easier.
+
 
 ## Installation
 
-```sh
-npm install @jridgewell/gen-mapping
+```bash
+npm install @jridgewell/sourcemap-codec
 ```
+
 
 ## Usage
 
-```typescript
-import { GenMapping, addMapping, setSourceContent, toEncodedMap, toDecodedMap } from '@jridgewell/gen-mapping';
+```js
+import { encode, decode } from '@jridgewell/sourcemap-codec';
 
-const map = new GenMapping({
-  file: 'output.js',
-  sourceRoot: 'https://example.com/',
-});
+var decoded = decode( ';EAEEA,EAAE,EAAC,CAAE;ECQY,UACC' );
 
-setSourceContent(map, 'input.js', `function foo() {}`);
+assert.deepEqual( decoded, [
+	// the first line (of the generated code) has no mappings,
+	// as shown by the starting semi-colon (which separates lines)
+	[],
 
-addMapping(map, {
-  // Lines start at line 1, columns at column 0.
-  generated: { line: 1, column: 0 },
-  source: 'input.js',
-  original: { line: 1, column: 0 },
-});
+	// the second line contains four (comma-separated) segments
+	[
+		// segments are encoded as you'd expect:
+		// [ generatedCodeColumn, sourceIndex, sourceCodeLine, sourceCodeColumn, nameIndex ]
 
-addMapping(map, {
-  generated: { line: 1, column: 9 },
-  source: 'input.js',
-  original: { line: 1, column: 9 },
-  name: 'foo',
-});
+		// i.e. the first segment begins at column 2, and maps back to the second column
+		// of the second line (both zero-based) of the 0th source, and uses the 0th
+		// name in the `map.names` array
+		[ 2, 0, 2, 2, 0 ],
 
-assert.deepEqual(toDecodedMap(map), {
-  version: 3,
-  file: 'output.js',
-  names: ['foo'],
-  sourceRoot: 'https://example.com/',
-  sources: ['input.js'],
-  sourcesContent: ['function foo() {}'],
-  mappings: [
-    [ [0, 0, 0, 0], [9, 0, 0, 9, 0] ]
-  ],
-});
+		// the remaining segments are 4-length rather than 5-length,
+		// because they don't map a name
+		[ 4, 0, 2, 4 ],
+		[ 6, 0, 2, 5 ],
+		[ 7, 0, 2, 7 ]
+	],
 
-assert.deepEqual(toEncodedMap(map), {
-  version: 3,
-  file: 'output.js',
-  names: ['foo'],
-  sourceRoot: 'https://example.com/',
-  sources: ['input.js'],
-  sourcesContent: ['function foo() {}'],
-  mappings: 'AAAA,SAASA',
-});
-```
+	// the final line contains two segments
+	[
+		[ 2, 1, 10, 19 ],
+		[ 12, 1, 11, 20 ]
+	]
+]);
 
-### Smaller Sourcemaps
-
-Not everything needs to be added to a sourcemap, and needless markings can cause signficantly
-larger file sizes. `gen-mapping` exposes `maybeAddSegment`/`maybeAddMapping` APIs that will
-intelligently determine if this marking adds useful information. If not, the marking will be
-skipped.
-
-```typescript
-import { maybeAddMapping } from '@jridgewell/gen-mapping';
-
-const map = new GenMapping();
-
-// Adding a sourceless marking at the beginning of a line isn't useful.
-maybeAddMapping(map, {
-  generated: { line: 1, column: 0 },
-});
-
-// Adding a new source marking is useful.
-maybeAddMapping(map, {
-  generated: { line: 1, column: 0 },
-  source: 'input.js',
-  original: { line: 1, column: 0 },
-});
-
-// But adding another marking pointing to the exact same original location isn't, even if the
-// generated column changed.
-maybeAddMapping(map, {
-  generated: { line: 1, column: 9 },
-  source: 'input.js',
-  original: { line: 1, column: 0 },
-});
-
-assert.deepEqual(toEncodedMap(map), {
-  version: 3,
-  names: [],
-  sources: ['input.js'],
-  sourcesContent: [null],
-  mappings: 'AAAA',
-});
+var encoded = encode( decoded );
+assert.equal( encoded, ';EAEEA,EAAE,EAAC,CAAE;ECQY,UACC' );
 ```
 
 ## Benchmarks
 
 ```
-node v18.0.0
+node v20.10.0
 
-amp.js.map
-Memory Usage:
-gen-mapping: addSegment      5852872 bytes
-gen-mapping: addMapping      7716042 bytes
-source-map-js                6143250 bytes
-source-map-0.6.1             6124102 bytes
-source-map-0.8.0             6121173 bytes
-Smallest memory usage is gen-mapping: addSegment
+amp.js.map - 45120 segments
 
-Adding speed:
-gen-mapping:      addSegment x 441 ops/sec ±2.07% (90 runs sampled)
-gen-mapping:      addMapping x 350 ops/sec ±2.40% (86 runs sampled)
-source-map-js:    addMapping x 169 ops/sec ±2.42% (80 runs sampled)
-source-map-0.6.1: addMapping x 167 ops/sec ±2.56% (80 runs sampled)
-source-map-0.8.0: addMapping x 168 ops/sec ±2.52% (80 runs sampled)
-Fastest is gen-mapping:      addSegment
+Decode Memory Usage:
+local code                             5815135 bytes
+@jridgewell/sourcemap-codec 1.4.15     5868160 bytes
+sourcemap-codec                        5492584 bytes
+source-map-0.6.1                      13569984 bytes
+source-map-0.8.0                       6390584 bytes
+chrome dev tools                       8011136 bytes
+Smallest memory usage is sourcemap-codec
 
-Generate speed:
-gen-mapping:      decoded output x 150,824,370 ops/sec ±0.07% (102 runs sampled)
-gen-mapping:      encoded output x 663 ops/sec ±0.22% (98 runs sampled)
-source-map-js:    encoded output x 197 ops/sec ±0.45% (84 runs sampled)
-source-map-0.6.1: encoded output x 198 ops/sec ±0.33% (85 runs sampled)
-source-map-0.8.0: encoded output x 197 ops/sec ±0.06% (93 runs sampled)
-Fastest is gen-mapping:      decoded output
+Decode speed:
+decode: local code x 492 ops/sec ±1.22% (90 runs sampled)
+decode: @jridgewell/sourcemap-codec 1.4.15 x 499 ops/sec ±1.16% (89 runs sampled)
+decode: sourcemap-codec x 376 ops/sec ±1.66% (89 runs sampled)
+decode: source-map-0.6.1 x 34.99 ops/sec ±0.94% (48 runs sampled)
+decode: source-map-0.8.0 x 351 ops/sec ±0.07% (95 runs sampled)
+chrome dev tools x 165 ops/sec ±0.91% (86 runs sampled)
+Fastest is decode: @jridgewell/sourcemap-codec 1.4.15
 
+Encode Memory Usage:
+local code                              444248 bytes
+@jridgewell/sourcemap-codec 1.4.15      623024 bytes
+sourcemap-codec                        8696280 bytes
+source-map-0.6.1                       8745176 bytes
+source-map-0.8.0                       8736624 bytes
+Smallest memory usage is local code
 
-***
-
-
-babel.min.js.map
-Memory Usage:
-gen-mapping: addSegment     37578063 bytes
-gen-mapping: addMapping     37212897 bytes
-source-map-js               47638527 bytes
-source-map-0.6.1            47690503 bytes
-source-map-0.8.0            47470188 bytes
-Smallest memory usage is gen-mapping: addMapping
-
-Adding speed:
-gen-mapping:      addSegment x 31.05 ops/sec ±8.31% (43 runs sampled)
-gen-mapping:      addMapping x 29.83 ops/sec ±7.36% (51 runs sampled)
-source-map-js:    addMapping x 20.73 ops/sec ±6.22% (38 runs sampled)
-source-map-0.6.1: addMapping x 20.03 ops/sec ±10.51% (38 runs sampled)
-source-map-0.8.0: addMapping x 19.30 ops/sec ±8.27% (37 runs sampled)
-Fastest is gen-mapping:      addSegment
-
-Generate speed:
-gen-mapping:      decoded output x 381,379,234 ops/sec ±0.29% (96 runs sampled)
-gen-mapping:      encoded output x 95.15 ops/sec ±2.98% (72 runs sampled)
-source-map-js:    encoded output x 15.20 ops/sec ±7.41% (33 runs sampled)
-source-map-0.6.1: encoded output x 16.36 ops/sec ±10.46% (31 runs sampled)
-source-map-0.8.0: encoded output x 16.06 ops/sec ±6.45% (31 runs sampled)
-Fastest is gen-mapping:      decoded output
+Encode speed:
+encode: local code x 796 ops/sec ±0.11% (97 runs sampled)
+encode: @jridgewell/sourcemap-codec 1.4.15 x 795 ops/sec ±0.25% (98 runs sampled)
+encode: sourcemap-codec x 231 ops/sec ±0.83% (86 runs sampled)
+encode: source-map-0.6.1 x 166 ops/sec ±0.57% (86 runs sampled)
+encode: source-map-0.8.0 x 203 ops/sec ±0.45% (88 runs sampled)
+Fastest is encode: local code,encode: @jridgewell/sourcemap-codec 1.4.15
 
 
 ***
 
 
-preact.js.map
-Memory Usage:
-gen-mapping: addSegment       416247 bytes
-gen-mapping: addMapping       419824 bytes
-source-map-js                1024619 bytes
-source-map-0.6.1             1146004 bytes
-source-map-0.8.0             1113250 bytes
-Smallest memory usage is gen-mapping: addSegment
+babel.min.js.map - 347793 segments
 
-Adding speed:
-gen-mapping:      addSegment x 13,755 ops/sec ±0.15% (98 runs sampled)
-gen-mapping:      addMapping x 13,013 ops/sec ±0.11% (101 runs sampled)
-source-map-js:    addMapping x 4,564 ops/sec ±0.21% (98 runs sampled)
-source-map-0.6.1: addMapping x 4,562 ops/sec ±0.11% (99 runs sampled)
-source-map-0.8.0: addMapping x 4,593 ops/sec ±0.11% (100 runs sampled)
-Fastest is gen-mapping:      addSegment
+Decode Memory Usage:
+local code                            35424960 bytes
+@jridgewell/sourcemap-codec 1.4.15    35424696 bytes
+sourcemap-codec                       36033464 bytes
+source-map-0.6.1                      62253704 bytes
+source-map-0.8.0                      43843920 bytes
+chrome dev tools                      45111400 bytes
+Smallest memory usage is @jridgewell/sourcemap-codec 1.4.15
 
-Generate speed:
-gen-mapping:      decoded output x 379,864,020 ops/sec ±0.23% (93 runs sampled)
-gen-mapping:      encoded output x 14,368 ops/sec ±4.07% (82 runs sampled)
-source-map-js:    encoded output x 5,261 ops/sec ±0.21% (99 runs sampled)
-source-map-0.6.1: encoded output x 5,124 ops/sec ±0.58% (99 runs sampled)
-source-map-0.8.0: encoded output x 5,434 ops/sec ±0.33% (96 runs sampled)
-Fastest is gen-mapping:      decoded output
+Decode speed:
+decode: local code x 38.18 ops/sec ±5.44% (52 runs sampled)
+decode: @jridgewell/sourcemap-codec 1.4.15 x 38.36 ops/sec ±5.02% (52 runs sampled)
+decode: sourcemap-codec x 34.05 ops/sec ±4.45% (47 runs sampled)
+decode: source-map-0.6.1 x 4.31 ops/sec ±2.76% (15 runs sampled)
+decode: source-map-0.8.0 x 55.60 ops/sec ±0.13% (73 runs sampled)
+chrome dev tools x 16.94 ops/sec ±3.78% (46 runs sampled)
+Fastest is decode: source-map-0.8.0
+
+Encode Memory Usage:
+local code                             2606016 bytes
+@jridgewell/sourcemap-codec 1.4.15     2626440 bytes
+sourcemap-codec                       21152576 bytes
+source-map-0.6.1                      25023928 bytes
+source-map-0.8.0                      25256448 bytes
+Smallest memory usage is local code
+
+Encode speed:
+encode: local code x 127 ops/sec ±0.18% (83 runs sampled)
+encode: @jridgewell/sourcemap-codec 1.4.15 x 128 ops/sec ±0.26% (83 runs sampled)
+encode: sourcemap-codec x 29.31 ops/sec ±2.55% (53 runs sampled)
+encode: source-map-0.6.1 x 18.85 ops/sec ±3.19% (36 runs sampled)
+encode: source-map-0.8.0 x 19.34 ops/sec ±1.97% (36 runs sampled)
+Fastest is encode: @jridgewell/sourcemap-codec 1.4.15
 
 
 ***
 
 
-react.js.map
-Memory Usage:
-gen-mapping: addSegment       975096 bytes
-gen-mapping: addMapping      1102981 bytes
-source-map-js                2918836 bytes
-source-map-0.6.1             2885435 bytes
-source-map-0.8.0             2874336 bytes
-Smallest memory usage is gen-mapping: addSegment
+preact.js.map - 1992 segments
 
-Adding speed:
-gen-mapping:      addSegment x 4,772 ops/sec ±0.15% (100 runs sampled)
-gen-mapping:      addMapping x 4,456 ops/sec ±0.13% (97 runs sampled)
-source-map-js:    addMapping x 1,618 ops/sec ±0.24% (97 runs sampled)
-source-map-0.6.1: addMapping x 1,622 ops/sec ±0.12% (99 runs sampled)
-source-map-0.8.0: addMapping x 1,631 ops/sec ±0.12% (100 runs sampled)
-Fastest is gen-mapping:      addSegment
+Decode Memory Usage:
+local code                              261696 bytes
+@jridgewell/sourcemap-codec 1.4.15      244296 bytes
+sourcemap-codec                         302816 bytes
+source-map-0.6.1                        939176 bytes
+source-map-0.8.0                           336 bytes
+chrome dev tools                        587368 bytes
+Smallest memory usage is source-map-0.8.0
 
-Generate speed:
-gen-mapping:      decoded output x 379,107,695 ops/sec ±0.07% (99 runs sampled)
-gen-mapping:      encoded output x 5,421 ops/sec ±1.60% (89 runs sampled)
-source-map-js:    encoded output x 2,113 ops/sec ±1.81% (98 runs sampled)
-source-map-0.6.1: encoded output x 2,126 ops/sec ±0.10% (100 runs sampled)
-source-map-0.8.0: encoded output x 2,176 ops/sec ±0.39% (98 runs sampled)
-Fastest is gen-mapping:      decoded output
+Decode speed:
+decode: local code x 17,782 ops/sec ±0.32% (97 runs sampled)
+decode: @jridgewell/sourcemap-codec 1.4.15 x 17,863 ops/sec ±0.40% (100 runs sampled)
+decode: sourcemap-codec x 12,453 ops/sec ±0.27% (101 runs sampled)
+decode: source-map-0.6.1 x 1,288 ops/sec ±1.05% (96 runs sampled)
+decode: source-map-0.8.0 x 9,289 ops/sec ±0.27% (101 runs sampled)
+chrome dev tools x 4,769 ops/sec ±0.18% (100 runs sampled)
+Fastest is decode: @jridgewell/sourcemap-codec 1.4.15
+
+Encode Memory Usage:
+local code                              262944 bytes
+@jridgewell/sourcemap-codec 1.4.15       25544 bytes
+sourcemap-codec                         323048 bytes
+source-map-0.6.1                        507808 bytes
+source-map-0.8.0                        507480 bytes
+Smallest memory usage is @jridgewell/sourcemap-codec 1.4.15
+
+Encode speed:
+encode: local code x 24,207 ops/sec ±0.79% (95 runs sampled)
+encode: @jridgewell/sourcemap-codec 1.4.15 x 24,288 ops/sec ±0.48% (96 runs sampled)
+encode: sourcemap-codec x 6,761 ops/sec ±0.21% (100 runs sampled)
+encode: source-map-0.6.1 x 5,374 ops/sec ±0.17% (99 runs sampled)
+encode: source-map-0.8.0 x 5,633 ops/sec ±0.32% (99 runs sampled)
+Fastest is encode: @jridgewell/sourcemap-codec 1.4.15,encode: local code
+
+
+***
+
+
+react.js.map - 5726 segments
+
+Decode Memory Usage:
+local code                              678816 bytes
+@jridgewell/sourcemap-codec 1.4.15      678816 bytes
+sourcemap-codec                         816400 bytes
+source-map-0.6.1                       2288864 bytes
+source-map-0.8.0                        721360 bytes
+chrome dev tools                       1012512 bytes
+Smallest memory usage is local code
+
+Decode speed:
+decode: local code x 6,178 ops/sec ±0.19% (98 runs sampled)
+decode: @jridgewell/sourcemap-codec 1.4.15 x 6,261 ops/sec ±0.22% (100 runs sampled)
+decode: sourcemap-codec x 4,472 ops/sec ±0.90% (99 runs sampled)
+decode: source-map-0.6.1 x 449 ops/sec ±0.31% (95 runs sampled)
+decode: source-map-0.8.0 x 3,219 ops/sec ±0.13% (100 runs sampled)
+chrome dev tools x 1,743 ops/sec ±0.20% (99 runs sampled)
+Fastest is decode: @jridgewell/sourcemap-codec 1.4.15
+
+Encode Memory Usage:
+local code                              140960 bytes
+@jridgewell/sourcemap-codec 1.4.15      159808 bytes
+sourcemap-codec                         969304 bytes
+source-map-0.6.1                        930520 bytes
+source-map-0.8.0                        930248 bytes
+Smallest memory usage is local code
+
+Encode speed:
+encode: local code x 8,013 ops/sec ±0.19% (100 runs sampled)
+encode: @jridgewell/sourcemap-codec 1.4.15 x 7,989 ops/sec ±0.20% (101 runs sampled)
+encode: sourcemap-codec x 2,472 ops/sec ±0.21% (99 runs sampled)
+encode: source-map-0.6.1 x 2,200 ops/sec ±0.17% (99 runs sampled)
+encode: source-map-0.8.0 x 2,220 ops/sec ±0.37% (99 runs sampled)
+Fastest is encode: local code
+
+
+***
+
+
+vscode.map - 2141001 segments
+
+Decode Memory Usage:
+local code                           198955264 bytes
+@jridgewell/sourcemap-codec 1.4.15   199175352 bytes
+sourcemap-codec                      199102688 bytes
+source-map-0.6.1                     386323432 bytes
+source-map-0.8.0                     244116432 bytes
+chrome dev tools                     293734280 bytes
+Smallest memory usage is local code
+
+Decode speed:
+decode: local code x 3.90 ops/sec ±22.21% (15 runs sampled)
+decode: @jridgewell/sourcemap-codec 1.4.15 x 3.95 ops/sec ±23.53% (15 runs sampled)
+decode: sourcemap-codec x 3.82 ops/sec ±17.94% (14 runs sampled)
+decode: source-map-0.6.1 x 0.61 ops/sec ±7.81% (6 runs sampled)
+decode: source-map-0.8.0 x 9.54 ops/sec ±0.28% (28 runs sampled)
+chrome dev tools x 2.18 ops/sec ±10.58% (10 runs sampled)
+Fastest is decode: source-map-0.8.0
+
+Encode Memory Usage:
+local code                            13509880 bytes
+@jridgewell/sourcemap-codec 1.4.15    13537648 bytes
+sourcemap-codec                       32540104 bytes
+source-map-0.6.1                     127531040 bytes
+source-map-0.8.0                     127535312 bytes
+Smallest memory usage is local code
+
+Encode speed:
+encode: local code x 20.10 ops/sec ±0.19% (38 runs sampled)
+encode: @jridgewell/sourcemap-codec 1.4.15 x 20.26 ops/sec ±0.32% (38 runs sampled)
+encode: sourcemap-codec x 5.44 ops/sec ±1.64% (18 runs sampled)
+encode: source-map-0.6.1 x 2.30 ops/sec ±4.79% (10 runs sampled)
+encode: source-map-0.8.0 x 2.46 ops/sec ±6.53% (10 runs sampled)
+Fastest is encode: @jridgewell/sourcemap-codec 1.4.15
 ```
 
-[source-map]: https://www.npmjs.com/package/source-map
-[trace-mapping]: https://github.com/jridgewell/sourcemaps/tree/main/packages/trace-mapping
+# License
+
+MIT
